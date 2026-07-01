@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'IBM Plex Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  
+  --color-canvas: #151526;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #7b7d8c;
+  --color-accent-primary: #2563eb;
+  --color-accent-secondary: #60a5fa;
+  --color-accent-dark: #1d4ed8;
+  --color-card-bg: #161616;
+  --color-footer-bg: #0a0a0a;
+}
+
+/* Smooth layout scrolling */
+html {
+  scroll-behavior: smooth;
+  font-family: var(--font-sans);
+}
+
+body {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--color-canvas);
+  color: var(--color-text-primary);
+}
+
+/* Sleek custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-canvas);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-accent-secondary);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent-primary);
+}
+
+/* Custom animation keyframes for floating telemetry details */
+@keyframes dash {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
