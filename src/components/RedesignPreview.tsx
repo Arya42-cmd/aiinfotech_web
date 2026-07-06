@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, FormEvent } from "react";
-import { motion, AnimatePresence, useScroll, useTransform } from "motion/react";
+import { motion, AnimatePresence, useScroll, useTransform, type Variants } from "motion/react";
 import { 
   ShieldCheck, ArrowRight, Check, Mail, Phone, Clock, MapPin, 
   Users, Activity, Settings, Terminal, Send, Menu, X, 
@@ -154,7 +154,7 @@ export default function RedesignPreview({
         staggerChildren: 0.1,
       },
     },
-  };
+  } satisfies Variants;
 
   const staggerCardItem = {
     hidden: { opacity: 0, y: 40, scale: 0.95, rotateX: 6 },
@@ -164,12 +164,12 @@ export default function RedesignPreview({
       scale: 1,
       rotateX: 0,
       transition: {
-        type: "spring",
+        type: "spring" as const,
         stiffness: 70,
         damping: 14,
       },
     },
-  };
+  } satisfies Variants;
 
   // Handle Contact Submit
   const handleContactSubmit = (e: FormEvent) => {
@@ -275,9 +275,6 @@ export default function RedesignPreview({
                   TECH
                 </span>
               </div>
-              <span className="text-[8px] font-mono tracking-widest text-[#7b7d8c] uppercase block mt-1">
-                Enterprise Solutions
-              </span>
             </div>
           </a>
 

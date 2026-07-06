@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { motion, useScroll, useSpring, AnimatePresence } from "motion/react";
-import { X, ShieldCheck, Mail, Lock, LogIn, AlertCircle } from "lucide-react";
+import { LogIn, AlertCircle, X, Mail, Lock } from "lucide-react";
 import RedesignPreview from "./components/RedesignPreview";
 import CareersPage from "./components/CareersPage";
 import { Job } from "./types";
-import { defaultJobs } from "./data/jobsData";
+import { supabase } from "./lib/supabase";
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<string>("home"); // "home" | "careers"
@@ -13,36 +13,119 @@ export default function App() {
     return saved !== null ? saved === "dark" : true; // default to immersive dark
   });
 
-  // Global jobs state with localStorage persistence
-  const [jobs, setJobs] = useState<Job[]>(() => {
-    const saved = localStorage.getItem("jobs_list");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse saved jobs", e);
-      }
-    }
-    return defaultJobs;
+  const [jobs, setJobs] = useState<Job[]>([]);
+
+  const mapSupabaseJobToJob = (job: Record<string, any>): Job => ({
+    id: job.id,
+    title: job.title || "",
+    category: job.category || "",
+    type: job.job_type || "",
+    location: job.location || "",
+    experience: job.experience || undefined,
+    salaryRange: job.salary || undefined,
+    description: job.description || undefined,
+    summary: job.description || undefined,
+    responsibilities: Array.isArray(job.responsibilities) ? job.responsibilities : [],
+    qualifications: Array.isArray(job.requirements) ? job.requirements : [],
+    requirements: Array.isArray(job.requirements) ? job.requirements : [],
   });
 
-  // Sync jobs to localStorage
+  const refreshJobs = async () => {
+    const { data, error } = await supabase
+      .from("jobs")
+      .select("id,title,category,job_type,location,experience,salary,description,responsibilities,requirements")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Failed to load jobs from Supabase", error);
+      setJobs([]);
+      return;
+    }
+
+    setJobs((data || []).map(mapSupabaseJobToJob));
+  };
+
   useEffect(() => {
-    localStorage.setItem("jobs_list", JSON.stringify(jobs));
-  }, [jobs]);
+    void refreshJobs();
+  }, []);
 
   // Recruiter logged in state
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
     return localStorage.getItem("recruiter_logged_in") === "true";
   });
 
-  // Login modal trigger state
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncSession = async () => {
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (error) {
+          setLoginError(error.message);
+        }
+
+        const authenticated = Boolean(session?.user);
+        setIsLoggedIn(authenticated);
+        if (authenticated) {
+          localStorage.setItem("recruiter_logged_in", "true");
+          setCurrentPage("careers");
+          if (window.location.hash !== "#careers") {
+            window.location.hash = "#careers";
+          }
+        } else {
+          localStorage.removeItem("recruiter_logged_in");
+          setCurrentPage("home");
+          if (window.location.hash) {
+            window.location.hash = "";
+          }
+        }
+      } finally {
+        if (isMounted) {
+          setAuthChecking(false);
+        }
+      }
+    };
+
+    syncSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const authenticated = Boolean(session?.user);
+      setIsLoggedIn(authenticated);
+
+      if (authenticated) {
+        localStorage.setItem("recruiter_logged_in", "true");
+        setCurrentPage("careers");
+        window.location.hash = "#careers";
+      } else {
+        localStorage.removeItem("recruiter_logged_in");
+        setCurrentPage("home");
+        window.location.hash = "";
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Login modal state
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Login form fields
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [isSubmittingLogin, setIsSubmittingLogin] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
 
   // Toast notifications state
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
@@ -99,13 +182,16 @@ export default function App() {
     };
 
     window.addEventListener("hashchange", handleHashChange);
-    // Trigger on initial page render
     handleHashChange();
 
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
     };
   }, []);
+
+  const handleOpenLogin = () => {
+    setIsLoginModalOpen(true);
+  };
 
   const handleNavigateHome = (sectionId?: string) => {
     setCurrentPage("home");
@@ -123,7 +209,7 @@ export default function App() {
     }
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
 
@@ -136,32 +222,56 @@ export default function App() {
       return;
     }
 
-    // Recruiter authentication logic
-    // Accept recruiter@aiinfotech.com and admin as suggested
-    // Also support any reasonable input to make trying it painless
-    const cleanEmail = loginEmail.trim().toLowerCase();
-    if (cleanEmail === "recruiter@aiinfotech.com" && loginPassword === "admin") {
-      setIsLoggedIn(true);
-      localStorage.setItem("recruiter_logged_in", "true");
-      setIsLoginModalOpen(false);
-      setLoginEmail("");
-      setLoginPassword("");
-      showToast("Access Granted: Welcome back, Recruiter!", "success");
+    setIsSubmittingLogin(true);
 
-      // Redirect to careers page automatically so they can see/post job openings
-      if (currentPage !== "careers") {
-        window.location.hash = "#careers";
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginEmail.trim(),
+        password: loginPassword,
+      });
+
+      if (error) {
+        setLoginError(error.message || "Unable to sign in. Please try again.");
+        return;
       }
-    } else {
-      setLoginError("Invalid recruiter credentials. Try recruiter@aiinfotech.com / admin.");
+
+      if (data.session?.user) {
+        setIsLoggedIn(true);
+        localStorage.setItem("recruiter_logged_in", "true");
+        setLoginEmail("");
+        setLoginPassword("");
+        setIsLoginModalOpen(false);
+        setCurrentPage("careers");
+        window.location.hash = "#careers";
+        showToast("Access Granted: Welcome back, Recruiter!", "success");
+      }
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Unable to sign in. Please try again.");
+    } finally {
+      setIsSubmittingLogin(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setIsLoggedIn(false);
     localStorage.removeItem("recruiter_logged_in");
+    setIsLoginModalOpen(false);
+    setCurrentPage("home");
+    window.location.hash = "";
     showToast("Successfully Logged Out", "info");
   };
+
+  if (authChecking) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center transition-colors duration-300 ${isDarkMode ? "bg-[#151526] text-white" : "bg-[#f4f5f8] text-slate-900"}`}>
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-10 w-10 rounded-full border-2 border-accent-primary/30 border-t-accent-primary animate-spin" />
+          <p className="text-sm font-mono uppercase tracking-[0.3em]">Checking session</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`min-h-screen flex flex-col transition-colors duration-300 ${isDarkMode ? "bg-[#151526] text-white" : "bg-[#f4f5f8] text-slate-900"}`}>
@@ -177,7 +287,7 @@ export default function App() {
             isLoggedIn={isLoggedIn}
             setIsLoggedIn={setIsLoggedIn}
             onNavigateHome={handleNavigateHome}
-            onOpenLogin={() => setIsLoginModalOpen(true)}
+            onOpenLogin={handleOpenLogin}
             onLogout={handleLogout}
           />
         ) : (
@@ -189,18 +299,17 @@ export default function App() {
             setIsLoggedIn={setIsLoggedIn}
             jobs={jobs}
             setJobs={setJobs}
-            onOpenLogin={() => setIsLoginModalOpen(true)}
+            onOpenLogin={handleOpenLogin}
             onLogout={handleLogout}
             showToast={showToast}
+            onRefreshJobs={refreshJobs}
           />
         )}
       </main>
 
-      {/* Recruiter Login Glassmorphic Modal */}
       <AnimatePresence>
         {isLoginModalOpen && (
           <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
-            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -209,108 +318,92 @@ export default function App() {
               className="absolute inset-0 bg-black/60 backdrop-blur-md"
             />
 
-            {/* Modal Body */}
             <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 15 }}
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 15 }}
-              transition={{ type: "spring", duration: 0.4 }}
-              className={`relative w-full max-w-md p-8 border backdrop-blur-xl shadow-2xl rounded-3xl overflow-hidden ${
-                isDarkMode 
-                  ? "bg-[#16162a]/90 border-white/10 text-white" 
+              exit={{ opacity: 0, scale: 0.95, y: 16 }}
+              transition={{ type: "spring", duration: 0.35 }}
+              onClick={(e) => e.stopPropagation()}
+              className={`relative w-full max-w-md p-6 border backdrop-blur-xl shadow-2xl rounded-3xl overflow-hidden ${
+                isDarkMode
+                  ? "bg-[#16162a]/90 border-white/10 text-white"
                   : "bg-white/95 border-slate-200 text-slate-900"
               }`}
             >
-              {/* Background ambient light */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-accent-primary/20 rounded-full blur-3xl pointer-events-none" />
-
-              {/* Close Button */}
               <button
+                type="button"
                 onClick={() => setIsLoginModalOpen(false)}
                 className={`absolute top-4 right-4 p-2 rounded-full border transition-colors ${
-                  isDarkMode 
-                    ? "border-white/10 hover:bg-white/5 text-slate-400 hover:text-white" 
+                  isDarkMode
+                    ? "border-white/10 hover:bg-white/5 text-slate-400 hover:text-white"
                     : "border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-slate-900"
                 }`}
               >
                 <X className="w-4 h-4" />
               </button>
 
-              <div className="space-y-6 relative z-10">
-                {/* Header */}
-                <div className="text-center space-y-2">
-                  <div className="inline-flex p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-2xl mb-2">
-                    <ShieldCheck className="w-6 h-6 text-accent-primary" />
+              <form onSubmit={handleLoginSubmit} className="space-y-4 relative z-10">
+                {loginError && (
+                  <div className="flex items-start gap-2 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-400 font-medium">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{loginError}</span>
                   </div>
-                  <h3 className="text-2xl font-bold tracking-tight">Login</h3>
-                  <p className={`text-xs ${isDarkMode ? "text-slate-400" : "text-slate-500"}`}>
-                    Please authenticate to post and manage job opportunities
-                  </p>
+                )}
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-mono tracking-widest text-slate-400 uppercase font-semibold">Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      className={`w-full pl-10 pr-4 py-3 text-xs border rounded-xl focus:outline-none focus:border-accent-primary transition-all ${
+                        isDarkMode
+                          ? "bg-[#151526]/80 border-white/10 text-white"
+                          : "bg-slate-50 border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
                 </div>
 
-                {/* Simulated Credentials Box */}
-                <div className={`p-4 border text-[11px] font-mono tracking-wide rounded-2xl ${
-                  isDarkMode ? "bg-accent-primary/5 border-accent-primary/20 text-slate-300" : "bg-blue-50 border-blue-100 text-blue-800"
-                }`}>
-                  <p className="font-semibold mb-1 text-accent-primary uppercase tracking-wider">Demo Credentials</p>
-                  <p>Email: <span className="font-bold">recruiter@aiinfotech.com</span></p>
-                  <p>Password: <span className="font-bold">admin</span></p>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-mono tracking-widest text-slate-400 uppercase font-semibold">Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="password"
+                      placeholder="••••••••"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      className={`w-full pl-10 pr-4 py-3 text-xs border rounded-xl focus:outline-none focus:border-accent-primary transition-all ${
+                        isDarkMode
+                          ? "bg-[#151526]/80 border-white/10 text-white"
+                          : "bg-slate-50 border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
                 </div>
 
-                {/* Login Form */}
-                <form onSubmit={handleLoginSubmit} className="space-y-4">
-                  {loginError && (
-                    <div className="flex items-start gap-2 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-400 font-medium">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span>{loginError}</span>
-                    </div>
+                <button
+                  type="submit"
+                  disabled={isSubmittingLogin}
+                  className="w-full flex items-center justify-center gap-2 bg-accent-primary hover:bg-accent-secondary text-black text-xs font-mono tracking-wider font-bold uppercase py-3.5 rounded-xl transition-all shadow-[0_4px_20px_rgba(37,99,235,0.25)] hover:shadow-[0_4px_25px_rgba(37,99,235,0.4)] hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isSubmittingLogin ? (
+                    <>
+                      <span className="h-4 w-4 rounded-full border-2 border-black/30 border-t-black animate-spin" />
+                      <span>Signing In</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Sign In</span>
+                      <LogIn className="w-4 h-4" />
+                    </>
                   )}
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-mono tracking-widest text-slate-400 uppercase font-semibold">Email Address</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                      <input
-                        type="email"
-                        placeholder="recruiter@aiinfotech.com"
-                        value={loginEmail}
-                        onChange={(e) => setLoginEmail(e.target.value)}
-                        className={`w-full pl-10 pr-4 py-3 text-xs border rounded-xl focus:outline-none focus:border-accent-primary transition-all ${
-                          isDarkMode 
-                            ? "bg-[#151526]/80 border-white/10 text-white" 
-                            : "bg-slate-50 border-slate-200 text-slate-900"
-                        }`}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-mono tracking-widest text-slate-400 uppercase font-semibold">Password</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                      <input
-                        type="password"
-                        placeholder="••••••••"
-                        value={loginPassword}
-                        onChange={(e) => setLoginPassword(e.target.value)}
-                        className={`w-full pl-10 pr-4 py-3 text-xs border rounded-xl focus:outline-none focus:border-accent-primary transition-all ${
-                          isDarkMode 
-                            ? "bg-[#151526]/80 border-white/10 text-white" 
-                            : "bg-slate-50 border-slate-200 text-slate-900"
-                        }`}
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full flex items-center justify-center gap-2 bg-accent-primary hover:bg-accent-secondary text-black text-xs font-mono tracking-wider font-bold uppercase py-3.5 rounded-xl transition-all shadow-[0_4px_20px_rgba(37,99,235,0.25)] hover:shadow-[0_4px_25px_rgba(37,99,235,0.4)] hover:scale-[1.01]"
-                  >
-                    <span>Authenticate Session</span>
-                    <LogIn className="w-4 h-4" />
-                  </button>
-                </form>
-              </div>
+                </button>
+              </form>
             </motion.div>
           </div>
         )}

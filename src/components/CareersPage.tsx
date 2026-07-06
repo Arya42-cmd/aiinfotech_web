@@ -1,5 +1,8 @@
 import React, { useState, FormEvent, DragEvent, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { supabase } from "../lib/supabase";
+import RecruiterApplications from "./RecruiterApplications";
+import RecruiterAnalytics from "./RecruiterAnalytics";
 import { 
   Briefcase, Search, MapPin, Calendar, FileText, ChevronRight, ArrowLeft, 
   Upload, CheckCircle, Menu, X, Mail, AlertCircle, User, Phone, Terminal, ArrowRight,
@@ -18,6 +21,7 @@ interface CareersPageProps {
   onOpenLogin: () => void;
   onLogout: () => void;
   showToast: (msg: string, type: "success" | "error" | "info") => void;
+  onRefreshJobs: () => Promise<void>;
 }
 
 export default function CareersPage({ 
@@ -30,7 +34,8 @@ export default function CareersPage({
   setJobs,
   onOpenLogin,
   onLogout,
-  showToast
+  showToast,
+  onRefreshJobs
 }: CareersPageProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
@@ -59,6 +64,8 @@ export default function CareersPage({
   // Recruiter form states
   const [isPostFormOpen, setIsPostFormOpen] = useState(false);
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [isPublishingJob, setIsPublishingJob] = useState(false);
+  const [recruiterPanelView, setRecruiterPanelView] = useState<"jobs" | "applications" | "analytics">("jobs");
   
   const [jobTitle, setJobTitle] = useState("");
   const [jobCategory, setJobCategory] = useState("Quality Assurance");
@@ -69,10 +76,23 @@ export default function CareersPage({
   const [jobResponsibilitiesStr, setJobResponsibilitiesStr] = useState("");
   const [jobQualificationsStr, setJobQualificationsStr] = useState("");
 
-  const handlePostJob = (e: FormEvent) => {
+  const handlePostJob = async (e: FormEvent) => {
     e.preventDefault();
+
     if (!jobTitle.trim()) {
       showToast("Job Title is required.", "error");
+      return;
+    }
+    if (!jobCategory.trim()) {
+      showToast("Category is required.", "error");
+      return;
+    }
+    if (!jobType.trim()) {
+      showToast("Job type is required.", "error");
+      return;
+    }
+    if (!jobLocation.trim()) {
+      showToast("Location is required.", "error");
       return;
     }
     if (!jobDescription.trim() && !jobSummary.trim()) {
@@ -80,37 +100,57 @@ export default function CareersPage({
       return;
     }
 
-    const newJob: Job = {
-      id: editingJobId || `job-${Date.now()}`,
-      title: jobTitle.trim(),
-      category: jobCategory,
-      type: jobType,
-      location: jobLocation,
-      description: jobDescription.trim() || undefined,
-      summary: jobSummary.trim() || undefined,
-      responsibilities: jobResponsibilitiesStr.split("\n").map(s => s.trim()).filter(Boolean),
-      qualifications: jobQualificationsStr.split("\n").map(s => s.trim()).filter(Boolean)
-    };
+    setIsPublishingJob(true);
 
-    if (editingJobId) {
-      setJobs(prev => prev.map(j => j.id === editingJobId ? newJob : j));
-      showToast("Job opening updated successfully!", "success");
-      setEditingJobId(null);
-    } else {
-      setJobs(prev => [newJob, ...prev]);
-      showToast("Job opening posted successfully!", "success");
+    try {
+      const responsibilities = jobResponsibilitiesStr
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const requirements = jobQualificationsStr
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const payload: Record<string, unknown> = {
+        title: jobTitle.trim(),
+        category: jobCategory.trim(),
+        job_type: jobType.trim(),
+        location: jobLocation.trim(),
+        description: jobDescription.trim() || jobSummary.trim(),
+        responsibilities,
+        requirements,
+        status: "Open",
+      };
+
+      if (editingJobId) {
+        const { error } = await supabase.from("jobs").update(payload).eq("id", editingJobId);
+        if (error) throw error;
+        showToast("Job opening updated successfully!", "success");
+        setEditingJobId(null);
+      } else {
+        const { error } = await supabase.from("jobs").insert(payload);
+        if (error) throw error;
+        showToast("Job opening posted successfully!", "success");
+      }
+
+      await onRefreshJobs();
+
+      setJobTitle("");
+      setJobCategory("Quality Assurance");
+      setJobType("Full Time");
+      setJobLocation("Chennai");
+      setJobDescription("");
+      setJobSummary("");
+      setJobResponsibilitiesStr("");
+      setJobQualificationsStr("");
+      setIsPostFormOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to publish job right now.";
+      showToast(message, "error");
+    } finally {
+      setIsPublishingJob(false);
     }
-
-    // Reset form
-    setJobTitle("");
-    setJobCategory("Quality Assurance");
-    setJobType("Full Time");
-    setJobLocation("Chennai");
-    setJobDescription("");
-    setJobSummary("");
-    setJobResponsibilitiesStr("");
-    setJobQualificationsStr("");
-    setIsPostFormOpen(false);
   };
 
   const handleEditClick = (job: Job) => {
@@ -134,10 +174,17 @@ export default function CareersPage({
     }, 100);
   };
 
-  const handleDeleteClick = (id: string, title: string) => {
+  const handleDeleteClick = async (id: string, title: string) => {
     if (window.confirm(`Are you sure you want to delete the job opening for "${title}"?`)) {
-      setJobs(prev => prev.filter(j => j.id !== id));
-      showToast(`Successfully deleted job: ${title}`, "success");
+      try {
+        const { error } = await supabase.from("jobs").delete().eq("id", id);
+        if (error) throw error;
+        await onRefreshJobs();
+        showToast(`Successfully deleted job: ${title}`, "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to delete job right now.";
+        showToast(message, "error");
+      }
     }
   };
 
@@ -234,7 +281,7 @@ export default function CareersPage({
     }
   };
 
-  const handleApplySubmit = (e: FormEvent) => {
+  const handleApplySubmit = async (e: FormEvent) => {
     e.preventDefault();
     setFormError("");
 
@@ -244,6 +291,10 @@ export default function CareersPage({
     }
     if (!applicantEmail.trim()) {
       setFormError("Please enter your Email.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(applicantEmail.trim())) {
+      setFormError("Please enter a valid email address.");
       return;
     }
     if (!applicantPhone.trim()) {
@@ -258,16 +309,71 @@ export default function CareersPage({
       setFormError("Please upload your CV/Resume.");
       return;
     }
+    if (uploadedFile.size > 5 * 1024 * 1024) {
+      setFormError("Resume must be 5MB or smaller.");
+      return;
+    }
     if (!privacyPolicyAccepted) {
       setFormError("You must accept the Privacy Policy to proceed.");
       return;
     }
+    if (!selectedJob) {
+      setFormError("Please select a valid job opening.");
+      return;
+    }
 
     setSubmitting(true);
-    setTimeout(() => {
-      setSubmitting(false);
+
+    try {
+      let resumeUrl: string | null = null;
+
+      if (uploadedFile) {
+        try {
+          const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}-${uploadedFile.name.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from("resumes")
+            .upload(fileName, uploadedFile, {
+              cacheControl: "3600",
+              upsert: false,
+              contentType: uploadedFile.type || "application/octet-stream",
+            });
+
+          if (!uploadError && uploadData?.path) {
+            const { data: publicUrlData } = supabase.storage
+              .from("resumes")
+              .getPublicUrl(uploadData.path);
+
+            resumeUrl = publicUrlData?.publicUrl || null;
+          }
+        } catch {
+          resumeUrl = null;
+        }
+      }
+
+      const { error: insertError } = await supabase.from("applications").insert({
+        job_id: selectedJob,
+        full_name: applicantName.trim(),
+        email: applicantEmail.trim(),
+        phone: applicantPhone.trim(),
+        cover_letter: applicantBio.trim(),
+        resume_url: resumeUrl,
+        status: "Applied",
+      });
+
+      if (insertError) {
+        throw insertError;
+      }
+
+      showToast("Your application has been submitted successfully.", "success");
+      handleResetForm();
       setFormSuccess(true);
-    }, 1500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to submit your application right now.";
+      setFormError(message);
+      showToast(message, "error");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleResetForm = () => {
@@ -541,9 +647,33 @@ export default function CareersPage({
                         </div>
                       </div>
 
+                      <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-300/30 pt-6 dark:border-white/10">
+                        <button
+                          type="button"
+                          onClick={() => setRecruiterPanelView("jobs")}
+                          className={`rounded-full px-4 py-2 text-[11px] font-mono font-bold uppercase tracking-wider transition ${recruiterPanelView === "jobs" ? "bg-accent-primary text-black" : "border border-white/10 text-slate-400 hover:text-white"}`}
+                        >
+                          Post & Manage Jobs
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRecruiterPanelView("applications")}
+                          className={`rounded-full px-4 py-2 text-[11px] font-mono font-bold uppercase tracking-wider transition ${recruiterPanelView === "applications" ? "bg-accent-primary text-black" : "border border-white/10 text-slate-400 hover:text-white"}`}
+                        >
+                          Applications
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRecruiterPanelView("analytics")}
+                          className={`rounded-full px-4 py-2 text-[11px] font-mono font-bold uppercase tracking-wider transition ${recruiterPanelView === "analytics" ? "bg-accent-primary text-black" : "border border-white/10 text-slate-400 hover:text-white"}`}
+                        >
+                          Analytics
+                        </button>
+                      </div>
+
                       {/* Recruiter Form Content */}
                       <AnimatePresence>
-                        {isPostFormOpen && (
+                        {recruiterPanelView === "jobs" && isPostFormOpen && (
                           <motion.form
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: "auto", opacity: 1 }}
@@ -681,6 +811,18 @@ export default function CareersPage({
                           </motion.form>
                         )}
                       </AnimatePresence>
+
+                      {recruiterPanelView === "applications" && (
+                        <div className="mt-6 border-t border-slate-300/30 pt-6 dark:border-white/10">
+                          <RecruiterApplications isDarkMode={isDarkMode} showToast={showToast} />
+                        </div>
+                      )}
+
+                      {recruiterPanelView === "analytics" && (
+                        <div className="mt-6 border-t border-slate-300/30 pt-6 dark:border-white/10">
+                          <RecruiterAnalytics isDarkMode={isDarkMode} />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
